@@ -115,22 +115,3 @@ modrinth {
         required.project "architectury-api"
     }
 }
-
-curseforge {
-    apiKey = System.getenv("CURSEFORGE_API_KEY")
-    project {
-        id = "1038103"
-        releaseType = "release"
-        addGameVersion rootProject.minecraft_version
-        addGameVersion "Forge"
-        mainArtifact(remapJar) {
-            displayName = "Farm&Charm - ${rootProject.mod_version} - FORGE - ${rootProject.minecraft_version}"
-            changelog = changelogText
-            changelogType = "markdown"
-        }
-
-        relations {
-            requiredDependency "architectury-api"
-        }
-    }
-}

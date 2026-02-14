@@ -1,10 +1,12 @@
 package net.satisfy.farm_and_charm.core.block.entity;
 
+import com.mojang.datafixers.util.Pair;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.NonNullList;
 import net.minecraft.core.RegistryAccess;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.ContainerHelper;
 import net.minecraft.world.MenuProvider;
@@ -33,8 +35,10 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
+import static net.minecraft.world.item.ItemStack.isSameItem;
 import static net.minecraft.world.item.ItemStack.isSameItemSameTags;
 
 public class CookingPotBlockEntity extends BlockEntity implements BlockEntityTicker<CookingPotBlockEntity>, ImplementedInventory, MenuProvider {
@@ -45,6 +49,8 @@ public class CookingPotBlockEntity extends BlockEntity implements BlockEntityTic
     private int cookingTime;
     private boolean isBeingBurned;
     private UUID ownerUuid;
+    private ResourceLocation lastRecipeID;
+    private boolean checkNewRecipe;
     private final ContainerData delegate = new ContainerData() {
         public int get(int index) {
             return switch (index) {
@@ -68,6 +74,7 @@ public class CookingPotBlockEntity extends BlockEntity implements BlockEntityTic
 
     public CookingPotBlockEntity(BlockPos pos, BlockState state) {
         super(EntityTypeRegistry.COOKING_POT_BLOCK_ENTITY.get(), pos, state);
+        checkNewRecipe = true;
     }
 
     public static int getMaxCookingTime() {
@@ -136,6 +143,21 @@ public class CookingPotBlockEntity extends BlockEntity implements BlockEntityTic
         }
         return false;
     }
+
+    private boolean canCraftSimple(Recipe<?> recipe, RegistryAccess access) {
+        if (recipe == null || recipe.getResultItem(access).isEmpty()) return false;
+        if (recipe instanceof CookingPotRecipe cookingRecipe) {
+            if (cookingRecipe.isContainerRequired()) {
+                ItemStack containerSlotStack = getItem(CONTAINER_SLOT);
+                if (!containerSlotStack.is(cookingRecipe.getContainerItem().getItem())) return false;
+            }
+            ItemStack outputSlotStack = getItem(OUTPUT_SLOT);
+            ItemStack recipeOutput = recipe.getResultItem(access);
+            return outputSlotStack.isEmpty() || (isSameItem(outputSlotStack, recipeOutput) && outputSlotStack.getCount() < outputSlotStack.getMaxStackSize());
+        }
+        return false;
+    }
+
 
     private void craft(Recipe<?> recipe, RegistryAccess access) {
         if (!canCraft(recipe, access)) return;
@@ -218,6 +240,12 @@ public class CookingPotBlockEntity extends BlockEntity implements BlockEntityTic
         return outputStack;
     }
 
+    @Override
+    public void setChanged() {
+        super.setChanged();
+        this.checkNewRecipe = true;
+    }
+
     public void tick(Level world, BlockPos pos, BlockState state, CookingPotBlockEntity blockEntity) {
         if (world.isClientSide()) return;
         boolean wasBeingBurned = isBeingBurned;
@@ -226,9 +254,19 @@ public class CookingPotBlockEntity extends BlockEntity implements BlockEntityTic
             world.setBlock(pos, state.setValue(CookingPotBlock.LIT, isBeingBurned), Block.UPDATE_ALL);
         }
         if (!isBeingBurned) return;
-        Recipe<?> recipe = world.getRecipeManager().getRecipeFor(RecipeTypeRegistry.COOKING_POT_RECIPE_TYPE.get(), this, world).orElse(null);
-
-
+        if (level == null) throw new IllegalStateException("Null world not allowed");
+        Recipe<?> recipe;
+        if (checkNewRecipe) {
+            recipe = world.getRecipeManager().getRecipeFor(RecipeTypeRegistry.COOKING_POT_RECIPE_TYPE.get(), this, world).orElse(null);
+            lastRecipeID = recipe == null ? null : recipe.getId();
+            checkNewRecipe = false;
+        } else if (lastRecipeID != null) {
+            Optional<Pair<ResourceLocation, CookingPotRecipe>> recipePair = level.getRecipeManager().getRecipeFor(RecipeTypeRegistry.COOKING_POT_RECIPE_TYPE.get(), this, level, lastRecipeID);
+            recipe = recipePair.map(Pair::getSecond).orElse(null);
+        } else {
+            return;
+        }
+        if (recipe == null) return;
         if (recipe instanceof CookingPotRecipe cookingRecipe) {
             if (cookingRecipe.requiresLearning()) {
                 ServerPlayer owner = Objects.requireNonNull(world.getServer()).getPlayerList().getPlayer(ownerUuid);
@@ -242,9 +280,8 @@ public class CookingPotBlockEntity extends BlockEntity implements BlockEntityTic
             }
         }
 
-        if (level == null) throw new IllegalStateException("Null world not allowed");
         RegistryAccess access = level.registryAccess();
-        if (canCraft(recipe, access)) {
+        if (canCraftSimple(recipe, access)) {
             if (++cookingTime >= MAX_COOKING_TIME) {
                 cookingTime = 0;
                 craft(recipe, access);
